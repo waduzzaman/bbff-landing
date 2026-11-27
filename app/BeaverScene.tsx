@@ -14,7 +14,7 @@ import * as THREE from 'three';
 const UPSTREAM_Y = 0.9;
 const DOWNSTREAM_Y = 0.2;
 const DAM_TOP = 1.1;
-const CYCLE = 16; // seconds for one trip
+const CYCLE = 20; // seconds for one round trip
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const ease = (t: number) => {
@@ -30,6 +30,8 @@ function terrainHeight(x: number, z: number) {
   if (a < 8) return -0.5 + 1.9 * ease((a - 4.5) / 3.5) + bumps * ease((a - 4.5) / 3.5);
   return 1.4 + bumps + (a - 8) * 0.08;
 }
+
+const headingTo = (a: THREE.Vector3, b: THREE.Vector3) => Math.atan2(-(b.z - a.z), b.x - a.x);
 
 // ---------- Materials ----------
 const barkColors = ['#6b4a2e', '#7a5534', '#5a3d24', '#8a6440'];
@@ -362,14 +364,28 @@ function buildScene(container: HTMLDivElement) {
   scene.add(beaver);
 
   const swimY = UPSTREAM_Y - 0.36;
+
+  // Stick pile on the far bank, where the beaver fetches each new stick
+  const PILE_X = -8;
+  const PILE_Z = -7.6;
+  for (let i = 0; i < 9; i++) {
+    const s = makeStick();
+    const x = PILE_X + rand(-0.9, 0.9);
+    const z = PILE_Z - rand(0.3, 1.2);
+    s.position.set(x, terrainHeight(x, z) + 0.06 + (i % 3) * 0.06, z);
+    s.rotation.set(rand(-0.15, 0.15), rand(0, Math.PI), rand(-0.15, 0.15));
+    scene.add(s);
+  }
+
+  const L = new THREE.Vector3(PILE_X, terrainHeight(PILE_X, PILE_Z), PILE_Z); // on land at the pile
+  const P = new THREE.Vector3(PILE_X, swimY, -5.6); // in the water next to the pile
+  const W = new THREE.Vector3(); // in the water at the foot of the dam
+  const D = new THREE.Vector3(); // standing on top of the dam
+
   let cycleStart = 0;
-  let heading = 0;
-  let endZ = rand(-4, 4);
-  let stick: THREE.Group | null = null;
-  const S = new THREE.Vector3();
-  const W = new THREE.Vector3();
-  const D = new THREE.Vector3();
-  const E = new THREE.Vector3();
+  let heading = headingTo(L, P);
+  let stick: THREE.Group | null = makeStick();
+  mouth.add(stick);
 
   type Falling = { mesh: THREE.Group; from: THREE.Vector3; to: THREE.Vector3; qFrom: THREE.Quaternion; qTo: THREE.Quaternion; start: number };
   const placed: Falling[] = [];
@@ -377,11 +393,12 @@ function buildScene(container: HTMLDivElement) {
   const startCycle = (time: number) => {
     cycleStart = time;
     const targetZ = rand(-4.5, 4.5);
-    S.set(-18, swimY, endZ);
     W.set(-1.5, swimY, targetZ);
     D.set(-0.3, DAM_TOP, targetZ);
-    endZ = rand(-4.5, 4.5);
-    E.set(-18, swimY, endZ);
+  };
+
+  const pickUpStick = () => {
+    if (stick) return;
     stick = makeStick();
     mouth.add(stick);
   };
@@ -404,8 +421,6 @@ function buildScene(container: HTMLDivElement) {
       scene.remove(old.mesh);
     }
   };
-
-  const headingTo = (a: THREE.Vector3, b: THREE.Vector3) => Math.atan2(-(b.z - a.z), b.x - a.x);
 
   // ---------- Resize ----------
   const resize = () => {
@@ -440,16 +455,27 @@ function buildScene(container: HTMLDivElement) {
     let swimming = true;
     head.rotation.z = 0;
 
-    if (p < 6) {
-      beaver.position.lerpVectors(S, W, ease(p / 6));
-      targetHeading = headingTo(S, W);
+    // The round trip, step by step (times in seconds):
+    if (p < 1.2) {
+      // slide off the bank into the water
+      const k = ease(p / 1.2);
+      beaver.position.lerpVectors(L, P, k);
+      pitch = -0.4 * Math.sin(k * Math.PI);
+      targetHeading = headingTo(L, P);
+      swimming = k > 0.6;
+    } else if (p < 6) {
+      // swim to the dam with the stick
+      beaver.position.lerpVectors(P, W, ease((p - 1.2) / 4.8));
+      targetHeading = headingTo(P, W);
     } else if (p < 7.2) {
+      // climb up onto the dam
       const k = ease((p - 6) / 1.2);
       beaver.position.lerpVectors(W, D, k);
       pitch = 0.45 * Math.sin(k * Math.PI);
       targetHeading = 0;
       swimming = k < 0.4;
     } else if (p < 8.8) {
+      // lower its head and set the stick down
       const k = (p - 7.2) / 1.6;
       beaver.position.copy(D);
       head.rotation.z = -0.6 * Math.sin(k * Math.PI);
@@ -457,18 +483,41 @@ function buildScene(container: HTMLDivElement) {
       targetHeading = 0;
       moving = swimming = false;
     } else if (p < 10) {
+      // turn around
       beaver.position.copy(D);
       targetHeading = Math.PI;
       swimming = false;
     } else if (p < 11) {
+      // slide back into the pond
       const k = ease(p - 10);
       beaver.position.lerpVectors(D, W, k);
       pitch = -0.4 * Math.sin(k * Math.PI);
       targetHeading = Math.PI;
       swimming = k > 0.6;
+    } else if (p < 16) {
+      // swim back to the stick pile, mouth empty
+      beaver.position.lerpVectors(W, P, ease((p - 11) / 5));
+      targetHeading = headingTo(W, P);
+    } else if (p < 17.2) {
+      // climb out onto the bank
+      const k = ease((p - 16) / 1.2);
+      beaver.position.lerpVectors(P, L, k);
+      pitch = 0.4 * Math.sin(k * Math.PI);
+      targetHeading = headingTo(P, L);
+      swimming = k < 0.4;
+    } else if (p < 18.6) {
+      // bend down and grab a new stick from the pile
+      const k = (p - 17.2) / 1.4;
+      beaver.position.copy(L);
+      head.rotation.z = -0.6 * Math.sin(k * Math.PI);
+      if (k > 0.5) pickUpStick();
+      targetHeading = headingTo(P, L);
+      moving = swimming = false;
     } else {
-      beaver.position.lerpVectors(W, E, ease((p - 11) / (CYCLE - 11)));
-      targetHeading = headingTo(W, E);
+      // turn back toward the water
+      beaver.position.copy(L);
+      targetHeading = headingTo(L, P);
+      swimming = false;
     }
 
     // Turn smoothly along the shortest way round
